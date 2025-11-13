@@ -1,4 +1,3 @@
-
 export enum AppMode {
   Chat = 'Chat',
   Analyze = 'Analyze',
@@ -11,6 +10,8 @@ export enum MessageRole {
 }
 
 export interface ChatMessage {
+  id: string;
   role: MessageRole;
   text: string;
+  videoUrl?: string;
 }

@@ -1,10 +1,10 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import { ChatMessage, MessageRole } from '../types';
 import { LoadingSpinner } from './LoadingSpinner';
 import { SendIcon } from './icons/SendIcon';
 import { UploadIcon } from './icons/UploadIcon';
+import { Translation } from './Translation';
 
 interface ImageFile {
     base64: string;
@@ -48,7 +48,7 @@ const ImageAnalyzer: React.FC = () => {
             const base64 = await fileToBase64(file);
             setImage({ base64, mimeType: file.type, name: file.name });
             setMessages([
-                { role: MessageRole.Model, text: "Image loaded. What would you like to know about it?" }
+                { id: `model-${Date.now()}`, role: MessageRole.Model, text: "Image loaded. What would you like to know about it?" }
             ]);
         }
     };
@@ -57,7 +57,7 @@ const ImageAnalyzer: React.FC = () => {
         e.preventDefault();
         if (!input.trim() || isLoading || !image) return;
 
-        const userMessage: ChatMessage = { role: MessageRole.User, text: input };
+        const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: MessageRole.User, text: input };
         setMessages((prev) => [...prev, userMessage]);
         setInput('');
         setIsLoading(true);
@@ -82,7 +82,7 @@ const ImageAnalyzer: React.FC = () => {
                 contents: { parts: [imagePart, textPart] },
             });
 
-            const modelResponse: ChatMessage = { role: MessageRole.Model, text: response.text };
+            const modelResponse: ChatMessage = { id: `model-${Date.now()}`, role: MessageRole.Model, text: response.text };
             setMessages((prev) => [...prev, modelResponse]);
 
         } catch (e) {
@@ -127,10 +127,11 @@ const ImageAnalyzer: React.FC = () => {
                 </button>
             </div>
             <div className="flex-grow p-6 overflow-y-auto space-y-6">
-                {messages.map((msg, index) => (
-                    <div key={index} className={`flex items-end gap-3 ${msg.role === MessageRole.User ? 'justify-end' : 'justify-start'}`}>
+                {messages.map((msg) => (
+                    <div key={msg.id} className={`flex items-end gap-3 ${msg.role === MessageRole.User ? 'justify-end' : 'justify-start'}`}>
                         <div className={`p-4 rounded-2xl max-w-sm md:max-w-md break-words ${msg.role === MessageRole.User ? 'bg-sky-600 text-white rounded-br-none' : 'bg-gray-700 text-gray-200 rounded-bl-none'}`}>
                             <p className="whitespace-pre-wrap">{msg.text}</p>
+                             {msg.role === MessageRole.Model && <Translation text={msg.text} />}
                         </div>
                     </div>
                 ))}
