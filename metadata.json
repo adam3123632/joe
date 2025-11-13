@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Multi-Modal Studio文生图，图生视频",
+  "description": "An application to chat with an AI, analyze images, and generate new images and videos using the Gemini API.",
+  "requestFramePermissions": []
+}
