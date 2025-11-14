@@ -1,6 +1,10 @@
 
 import React from 'react';
 import { AppMode } from '../types';
+import { VoiceChatIcon } from './icons/VoiceChatIcon';
+import { ImageIcon } from './icons/ImageIcon';
+import { PaletteIcon } from './icons/PaletteIcon';
+import { VideoIcon } from './icons/VideoIcon';
 
 interface HeaderProps {
   currentMode: AppMode;
@@ -9,18 +13,20 @@ interface HeaderProps {
 
 const NavButton: React.FC<{
   label: AppMode;
+  icon: React.ReactNode;
   currentMode: AppMode;
   onClick: () => void;
-}> = ({ label, currentMode, onClick }) => (
+}> = ({ label, icon, currentMode, onClick }) => (
   <button
     onClick={onClick}
-    className={`px-3 py-2 text-sm md:text-base font-medium rounded-md transition-colors duration-200 ${
+    className={`flex items-center gap-2 px-3 py-2 text-sm md:text-base font-medium rounded-md transition-colors duration-200 ${
       currentMode === label
         ? 'bg-sky-600 text-white shadow-md'
         : 'text-gray-300 hover:bg-gray-700 hover:text-white'
     }`}
   >
-    {label}
+    {icon}
+    <span>{label}</span>
   </button>
 );
 
@@ -33,9 +39,10 @@ export const Header: React.FC<HeaderProps> = ({ currentMode, setMode }) => {
            <h1 className="text-xl font-bold text-white hidden sm:block">Gemini Multi-Modal Studio</h1>
         </div>
         <div className="flex items-center space-x-2 md:space-x-4 bg-gray-900 p-1 rounded-lg">
-          <NavButton label={AppMode.Chat} currentMode={currentMode} onClick={() => setMode(AppMode.Chat)} />
-          <NavButton label={AppMode.Analyze} currentMode={currentMode} onClick={() => setMode(AppMode.Analyze)} />
-          <NavButton label={AppMode.Generate} currentMode={currentMode} onClick={() => setMode(AppMode.Generate)} />
+          <NavButton icon={<VoiceChatIcon />} label={AppMode.Chat} currentMode={currentMode} onClick={() => setMode(AppMode.Chat)} />
+          <NavButton icon={<ImageIcon />} label={AppMode.Analyze} currentMode={currentMode} onClick={() => setMode(AppMode.Analyze)} />
+          <NavButton icon={<VideoIcon />} label={AppMode.AnalyzeVideo} currentMode={currentMode} onClick={() => setMode(AppMode.AnalyzeVideo)} />
+          <NavButton icon={<PaletteIcon />} label={AppMode.Generate} currentMode={currentMode} onClick={() => setMode(AppMode.Generate)} />
         </div>
       </nav>
     </header>

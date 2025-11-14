@@ -5,6 +5,7 @@ import ImageAnalyzer from './components/ImageAnalyzer';
 import Generator from './components/Generator';
 import { Header } from './components/Header';
 import { AppMode } from './types';
+import VideoAnalyzer from './components/VideoAnalyzer';
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.Chat);
@@ -17,6 +18,8 @@ const App: React.FC = () => {
         return <ImageAnalyzer />;
       case AppMode.Generate:
         return <Generator />;
+      case AppMode.AnalyzeVideo:
+        return <VideoAnalyzer />;
       default:
         return <Chatbot />;
     }
