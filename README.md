@@ -1,20 +1,51 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 听笺
 
-# Run and deploy your AI Studio app
+把喜欢的文字，读给生活听。一个可直接部署为静态网站的中文稿件朗读器。
 
-This contains everything you need to run your app locally.
+## 使用
 
-View your app in AI Studio: https://ai.studio/apps/drive/1bmoinn8ea40jvjRK1v1sG5LYkEYr_kjC
+- 复制 ChatGPT 中的稿件，点击「粘贴稿件」；浏览器不允许读取剪贴板时，在编辑框中手动粘贴。
+- 支持新建、编辑、搜索、删除稿件，以及导入 UTF-8 的 TXT / Markdown 文本（1 MB 以内、正文最多 12 万字符）。
+- 支持语音播放、暂停/继续、拖动进度、前后跳转、0.75–2 倍速、声音选择；点击正文段落可从该段开始朗读。
+- 稿件、收听进度与上次选择保存在当前浏览器中；清理网站数据或更换设备不会保留它们。可随时导出 TXT 备份。
+- 点击「分享这篇稿件」复制链接。分享包含标题与全文，不包含你的书架、稿件 ID 或进度。朋友打开后可以点击播放，也可以主动存入自己的书架。
 
-## Run Locally
+## 本地开发
 
-**Prerequisites:**  Node.js
+已验证 Node.js 24。Node 版本需要支持原生 TypeScript strip-types 测试运行器（推荐 Node 24 LTS）。
 
+```sh
+npm install --package-lock=false
+npm run dev
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+开发服务器使用 3000 端口。无需 Gemini 密钥、账号、数据库或外部样式 CDN。
+
+```sh
+npm run typecheck
+npm test
+npm run build
+npm run preview
+```
+
+`tsconfig.app.json` 检查新的阅读应用入口及其依赖、工具和测试；旧版未使用的 AI Studio 组件仍保留在仓库中，不在新应用入口内。
+
+## 语音与进度
+
+使用浏览器 Web Speech API，实际音色和语言由设备提供，部分声音需要联网。首次朗读必须由用户点击播放。若没有可用语音，页面会提示相应错误；请安装系统中文语音或使用新版 Chrome、Edge、Safari。
+
+语音按短句连续播放，进度根据真实的 boundary / end 事件更新。某些系统没有字词边界事件，进度会按句更新。显示的分钟数和前后 10 秒为字数估算，切换倍速或声音会从最近的语音边界继续，可能重复正在读的词。网页不是音频录制器，分享者和接收者的声音可能不同。
+
+## 部署与分享
+
+运行 `npm run build` 后，将 `dist/` 发布到支持 HTTPS 的静态网站托管服务（例如 GitHub Pages、Cloudflare Pages、Netlify 或自己的服务器），构建命令为 `npm run build`，发布目录为 `dist`。Vite 使用相对资源路径，支持子目录部署。
+
+发布到公开网址后再生成分享链接，朋友才能访问。开发机器的本地地址无法供朋友打开。
+
+本项目选择 GitHub Pages 托管。源码发布到 `codex/tingjian-reader` 分支，网页构建产物发布到 `gh-pages` 分支。在仓库 Settings → Pages 中，选择「Deploy from a branch」，分支选择 `gh-pages`、目录选择 `/ (root)`，保存后等待 Pages 部署成功。预计网址为 `https://adam3123632.github.io/joe/`；只有 Pages 部署成功并实际访问验证后，才能认定网站已上线。
+
+分享正文压缩后放在 URL 的片段中，不上传到稿件服务器。链接不是加密的，获得链接的人都能查看全文；请勿用于保密稿件。超长稿件会提示分篇或导出 TXT，链接经过某些聊天软件时也可能被截断。压缩链接需要支持 CompressionStream / DecompressionStream 的现代浏览器。
+
+## 测试
+
+`npm test` 使用 Node 自带测试运行器，覆盖本地存储、分享往返与错误输入、语音分片/定位、暂停恢复、倍速切换、完成状态和过期事件隔离。语音控制测试使用可控的合成器接口，不等同于在真实设备上验证音频输出。

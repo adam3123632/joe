@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["App.tsx", "index.tsx", "vite.config.ts", "hooks/**/*.ts", "lib/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
