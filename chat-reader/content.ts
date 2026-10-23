@@ -1,5 +1,5 @@
 import {NarrationController,emptyNarrationSnapshot,type NarrationSnapshot} from '../lib/speech';
-import {scanMessages,decorateMessage,cleanupDecorations,highlightParagraph,clearHighlights,LONG_MESSAGE_THRESHOLD,type ChatMessage} from './dom';
+import {scanMessages,pickMessageAt,decorateMessage,cleanupDecorations,highlightParagraph,clearHighlights,LONG_MESSAGE_THRESHOLD,type ChatMessage} from './dom';
 import {mountPanel,type PanelView,type PanelState} from './ui';
 import {createOwnedSpeechPort} from './speech-port';
 import {loadPreferences,savePreferences,contentSignature,type ReaderPreferences} from './preferences';
@@ -18,6 +18,9 @@ async function startReader() {
   let preferences:ReaderPreferences=await loadPreferences();
   let route=location.pathname;
   let messages:ChatMessage[]=[];
+  let pickedMessage:ChatMessage|null=null;
+  let picking=false;
+  let pickStyle:HTMLStyleElement|null=null;
   let selectedId='';
   let bound:ChatMessage|null=null;
   let boundRoute=route;
@@ -131,6 +134,7 @@ async function startReader() {
   }
 
   function choose(id:string,scroll=true) {
+    cancelPicking();
     const message=messages.find(entry=>entry.id===id);
     if(!message) return;
     if(selectedId!==id) {storePosition();engine?.stop();bound=null;clearHighlights();lastHighlighted='';}
@@ -203,16 +207,54 @@ async function startReader() {
 
   function requestRender() {if(!renderFrame&&!disposed) renderFrame=requestAnimationFrame(render);}
 
+  function cancelPicking() {
+    picking=false;pickStyle?.remove();pickStyle=null;
+    document.documentElement.removeAttribute('data-tj-picking');
+  }
+
+  function startPicking() {
+    if(picking) {cancelPicking();notice='已取消点选。';requestRender();return;}
+    picking=true;
+    document.documentElement.setAttribute('data-tj-picking','true');
+    pickStyle=document.createElement('style');pickStyle.dataset.tjHelper='pick-style';
+    pickStyle.textContent='html[data-tj-picking] main .markdown,html[data-tj-picking] main .prose,html[data-tj-picking] [data-testid^="conversation-turn-"]{cursor:crosshair!important}html[data-tj-picking] main .markdown:hover,html[data-tj-picking] main .prose:hover{outline:2px dashed #ce704f;outline-offset:6px}';
+    document.head.append(pickStyle);
+    notice='请点击左侧想读的回答正文，按 Esc 可以取消。';requestRender();
+  }
+
+  function pickClicked(event:MouseEvent) {
+    if(!picking||!(event.target instanceof Element)||event.target.closest('#tingjian-chat-reader-ui')) return;
+    event.preventDefault();event.stopImmediatePropagation();
+    const message=pickMessageAt(event.target);
+    if(!message) {notice='请点击回答的正文段落，避开输入框、链接和操作按钮。';requestRender();return;}
+    pickedMessage=message;
+    cancelPicking();rescan();choose(message.id,false);
+    notice=message.isStreaming?'已选中这条回答，生成完成后即可朗读。':'已选中这条回答，点击「开始朗读」即可。';requestRender();
+  }
+
+  function pickKeydown(event:KeyboardEvent) {
+    if(!picking||event.key!=='Escape') return;
+    event.preventDefault();event.stopImmediatePropagation();cancelPicking();notice='已取消点选。';requestRender();
+  }
+
   function rescan() {
     scanTimer=null;if(disposed) return;
     if(location.pathname!==route) {
+      cancelPicking();pickedMessage=null;
       storePosition();engine?.stop();bound=null;selectedId='';lastHighlighted='';clearHighlights();cleanupDecorations();
       route=location.pathname;notice=null;
     }
     messages=scanMessages();
+    if(pickedMessage) {
+      pickedMessage=pickedMessage.element.isConnected?pickMessageAt(pickedMessage.contentElement):null;
+      if(pickedMessage&&!messages.some(message=>message.element===pickedMessage?.element||message.contentElement===pickedMessage?.contentElement)) {
+        messages.push(pickedMessage);
+        messages.sort((a,b)=>a.element.compareDocumentPosition(b.element)&Node.DOCUMENT_POSITION_FOLLOWING?-1:1);
+      }
+    }
     if(!messages.some(message=>message.id===selectedId)) {
       if(bound&&bound.id===selectedId) {storePosition();engine?.stop();bound=null;clearHighlights();lastHighlighted='';}
-      selectedId=messages.find(m=>m.id===preferences.selectedByConversation[route])?.id||messages.at(-1)?.id||'';
+      selectedId=messages.find(m=>m.id===preferences.selectedByConversation[route])?.id||messages[messages.length-1]?.id||'';
     }
     const current=messages.find(m=>m.id===selectedId);
     if(bound&&boundRoute===route&&current?.id===bound.id) {
@@ -236,8 +278,8 @@ async function startReader() {
   }
 
   function scheduleScan() {
-    if(scanTimer) clearTimeout(scanTimer);
-    if(idleScan!==null) {window.cancelIdleCallback(idleScan);idleScan=null;}
+    // Keep a bounded delay even when ChatGPT continuously changes its DOM.
+    if(scanTimer||idleScan!==null) return;
     scanTimer=setTimeout(()=>{
       scanTimer=null;
       if('requestIdleCallback' in window) idleScan=window.requestIdleCallback(()=>{idleScan=null;rescan();},{timeout:1200});
@@ -246,6 +288,7 @@ async function startReader() {
   }
 
   panel=mountPanel({
+    onPickMessage:startPicking,onClose:()=>{if(picking){cancelPicking();notice='已取消点选。';requestRender();}},
     onSelect:id=>choose(id),
     onTogglePlay:()=>{if(snapshot.isPlaying&&bound?.id===selectedId){engine?.pause();storePosition();}else play();},
     onStop:()=>{const message=selected();engine?.stop();clearHighlights();lastHighlighted='';if(message) {preferences.positions[messageKey(message.id)]={signature:contentSignature(message.text),progress:0};queueSave();}requestRender();},
@@ -257,15 +300,24 @@ async function startReader() {
     onFollow:value=>{preferences.follow=value;if(value&&snapshot.isPlaying){const message=selected();if(message){highlightParagraph(message,snapshot.currentOffset,true);}}queueSave();requestRender();},
     onExpandAll:()=>{for(const message of messages){preferences.collapsed[messageKey(message.id)]=false;decorate(message,false);}queueSave();requestRender();},
     onCollapseAll:()=>{if(snapshot.isPlaying) preferences.follow=false;for(const message of messages){if(message.charCount>=LONG_MESSAGE_THRESHOLD&&!message.isStreaming){preferences.collapsed[messageKey(message.id)]=true;decorate(message,true);}}queueSave();requestRender();},
-    onRefresh:()=>{rescan();notice=messages.length?'目录已刷新，仅包含当前页面已加载的回答。':'当前没有已加载的回答，请先打开一段聊天。';requestRender();},
+    onRefresh:()=>{rescan();notice=messages.length?'目录已刷新，点击回答标题即可选中。':'尚未识别到回答。可点击「点选页面回答」，再点左侧正文。';requestRender();},
   });
+
+  // Document reading remains available even if the optional system-voice API fails.
+  rescan();
+  document.addEventListener('click',pickClicked,true);
+  document.addEventListener('keydown',pickKeydown,true);
 
   function loadVoices() {
     if(!supported) return;
-    voices=window.speechSynthesis.getVoices().slice().sort((a,b)=>Number(/^zh/i.test(b.lang))-Number(/^zh/i.test(a.lang))||a.name.localeCompare(b.name));
+    try {voices=window.speechSynthesis.getVoices().slice().sort((a,b)=>Number(/^zh/i.test(b.lang))-Number(/^zh/i.test(a.lang))||a.name.localeCompare(b.name));}
+    catch {voices=[];notice='系统音色暂时无法读取，目录与点选仍可使用。';requestRender();return;}
     if(engine) applyVoice();requestRender();
   }
-  if(supported) {loadVoices();window.speechSynthesis.addEventListener('voiceschanged',loadVoices);}
+  if(supported) {
+    loadVoices();
+    try {window.speechSynthesis.addEventListener?.('voiceschanged',loadVoices);} catch {/* Optional voice discovery must not block reading. */}
+  }
   const observer=new MutationObserver(records=>{
     if(records.every(record=>{
       const element=record.target.nodeType===Node.ELEMENT_NODE?record.target as Element:record.target.parentElement;
@@ -295,11 +347,12 @@ async function startReader() {
 
   function destroy() {
     if(disposed) return;
-    storePosition();disposed=true;engine?.dispose();observer.disconnect();clearInterval(routeInterval);
+    storePosition();disposed=true;cancelPicking();engine?.dispose();observer.disconnect();clearInterval(routeInterval);
     if(scanTimer) clearTimeout(scanTimer);if(saveTimer) clearTimeout(saveTimer);if(renderFrame) cancelAnimationFrame(renderFrame);
     if(idleScan!==null) window.cancelIdleCallback(idleScan);
     void savePreferences(preferences).catch(()=>{});
-    if(supported) window.speechSynthesis.removeEventListener('voiceschanged',loadVoices);
+    if(supported) window.speechSynthesis.removeEventListener?.('voiceschanged',loadVoices);
+    document.removeEventListener('click',pickClicked,true);document.removeEventListener('keydown',pickKeydown,true);
     window.removeEventListener('popstate',scheduleScan);window.removeEventListener('pagehide',pageHide);
     runtime?.onMessage?.removeListener(runtimeListener);host?.removeEventListener('tingjian:open',onOpen);
     cleanupDecorations();clearHighlights();panel.destroy();delete window.__tingjianChatReader;
@@ -307,7 +360,6 @@ async function startReader() {
   function pageHide(event:PageTransitionEvent) {if(event.persisted){engine?.pause();storePosition();void savePreferences(preferences).catch(()=>{});}else destroy();}
   window.addEventListener('pagehide',pageHide);
   window.__tingjianChatReader={open:onOpen,destroy};
-  rescan();
   if(pendingOpen) panel.setOpen(true);
 }
 

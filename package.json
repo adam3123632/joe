@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.chat-reader.json",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "build:chat-reader": "node scripts/build-chat-reader.mjs",
-    "test:chat-reader": "node chat-reader/test/browser.cjs"
+    "test:chat-reader": "node chat-reader/test/compatibility.cjs && node chat-reader/test/picker.cjs && node chat-reader/test/browser.cjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

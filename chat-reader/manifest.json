@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "听笺 · ChatGPT 阅读助手",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "minimum_chrome_version": "100",
   "description": "在 ChatGPT 网页中折叠长回答、浏览目录，使用系统语音朗读并显示段落进度。",
   "permissions": ["storage"],
   "action": {

@@ -42,6 +42,13 @@ const BLOCK_DESCENDANTS = 'p, li, h1, h2, h3, h4, h5, h6, blockquote, table';
 const CONTAINER_BLOCK = /^(DIV|SECTION|ARTICLE|UL|OL|DL|DT|DD|FIGURE|FIGCAPTION|DETAILS|SUMMARY|TR)$/;
 const fallbackIds = new WeakMap<HTMLElement, string>();
 let nextFallbackId = 0;
+const TURN_SELECTOR = 'article, [role="article"], [data-testid^="conversation-turn-"]';
+const ASSISTANT_SELECTOR = '[data-message-author-role="assistant"], [data-message-role="assistant"], [data-author-role="assistant"], [data-turn="assistant"], [data-author="assistant"], [data-testid="assistant-message"]';
+const OTHER_AUTHOR = ['user', 'system', 'tool'].flatMap(role => ['data-message-author-role', 'data-message-role', 'data-author-role', 'data-turn', 'data-author'].map(attr => `[${attr}="${role}"]`)).join(',');
+const NON_CONTENT = '[data-tj-helper], #tingjian-chat-reader-ui, aside, nav, [role="navigation"], [data-testid*="sidebar"], #stage-slideover-sidebar, pre, [data-testid="code-block"], input, textarea, select, form, [role="textbox"], [contenteditable]:not([contenteditable="false"])';
+const PROSE_SELECTOR = '[data-message-content], .markdown, .prose';
+const ASSISTANT_ACTION = '[data-testid="good-response-turn-action-button"], [data-testid="bad-response-turn-action-button"], [data-testid="read-aloud-button"], [data-testid="voice-play-turn-action-button"], button[aria-label="Read aloud"], button[aria-label="朗读"]';
+const STOP_CONTROL = '[data-testid="stop-button"], [data-testid="stop-generating-button"], button[aria-label*="Stop generating"], button[aria-label*="Stop streaming"], button[aria-label*="停止生成"], button[aria-label*="停止回复"]';
 
 interface Decoration {
   message: ChatMessage;
@@ -101,7 +108,10 @@ function extractParagraphs(contentElement: HTMLElement): {text: string; paragrap
   // nested lists, and their own bare text. Flush only the bare text around each
   // child block so no enclosing node repeats its descendants' words.
   const walk = (container: HTMLElement, owner: HTMLElement) => {
-    if (isExcluded(container, cache)) return;
+    // Some layouts make the whole answer clickable. Its body is still prose;
+    // actual buttons and controls inside it remain excluded below.
+    const clickableBody = container === contentElement && container.matches(PROSE_SELECTOR) && container.getAttribute('role') === 'button' && container.tagName !== 'BUTTON';
+    if (!clickableBody && isExcluded(container, cache)) return;
     let buffer = '';
     const flush = () => {emit(buffer, owner); buffer = '';};
     for (const child of Array.from(container.childNodes)) {
@@ -148,6 +158,8 @@ function stableId(element: HTMLElement): string {
   if (own) return own;
   const container = element.closest<HTMLElement>('[data-message-id]');
   if (container?.dataset.messageId) return container.dataset.messageId;
+  const attributed = Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(node => node.matches(ASSISTANT_SELECTOR) && !node.closest(OTHER_AUTHOR));
+  if (attributed?.dataset.messageId) return attributed.dataset.messageId;
   const article = element.closest<HTMLElement>('article, [role="article"]');
   if (article?.id) return article.id;
   if (article?.dataset.turnId) return article.dataset.turnId;
@@ -163,7 +175,7 @@ function hasStreamingSignal(element: HTMLElement): boolean {
     || !!article?.matches(selectors) || !!article?.querySelector(selectors);
 }
 
-function isVisibleControl(element: Element, cache = new WeakMap<Element, boolean>()): boolean {
+function isVisibleControl(element: Element, cache = new WeakMap<Element, boolean>(), honorAriaHidden = true): boolean {
   const view = element.ownerDocument.defaultView;
   const visited: Element[] = [];
   let visible = true;
@@ -171,55 +183,69 @@ function isVisibleControl(element: Element, cache = new WeakMap<Element, boolean
     const known = cache.get(current);
     if (known !== undefined) {visible = known; break;}
     visited.push(current);
-    if (current.hasAttribute('hidden') || current.getAttribute('aria-hidden') === 'true') {visible = false; break;}
+    if (honorAriaHidden && current.getAttribute('aria-hidden') === 'true') {visible = false; break;}
     if (view) {
       const style = view.getComputedStyle(current);
-      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') {visible = false; break;}
-    }
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.contentVisibility === 'hidden') {visible = false; break;}
+    } else if (current.hasAttribute('hidden')) {visible = false; break;}
   }
   for (const current of visited) cache.set(current, visible);
   return visible;
 }
 
-/** Only positively attributed assistant messages are eligible, including fallbacks. */
+function isEligibleBody(element: HTMLElement, visibility: WeakMap<Element, boolean>): boolean {
+  return !element.closest(`${NON_CONTENT}, ${OTHER_AUTHOR}`) && isVisibleControl(element, visibility, false);
+}
+
+function messageFromElement(element: HTMLElement, streaming = false): ChatMessage | null {
+  const contentElement = contentFor(element);
+  const {text, paragraphs} = extractParagraphs(contentElement);
+  const charCount = Array.from(text.replace(/\s/g, '')).length;
+  if (!charCount) return null;
+  const heading = paragraphs.find(paragraph => /^H[1-6]$/.test(paragraph.element.tagName));
+  return {id: stableId(element), element, contentElement, title: Array.from(heading?.text || paragraphs[0]?.text || 'ChatGPT 回复').slice(0, 48).join(''), text, paragraphs, charCount, isStreaming: streaming};
+}
+
+/** Automatic detection requires an author signal or an assistant-only action. */
 export function scanMessages(root: Document = document): ChatMessage[] {
   const visibility = new WeakMap<Element, boolean>();
-  const candidates = new Set<HTMLElement>(root.querySelectorAll<HTMLElement>([
-    '[data-message-author-role="assistant"]',
-    'article[data-turn="assistant"]', '[role="article"][data-turn="assistant"]',
-    'article[data-author="assistant"]', '[role="article"][data-author="assistant"]',
-    '[data-testid="assistant-message"]',
-  ].join(',')));
+  const candidates = new Set<HTMLElement>();
+  for (const marker of root.querySelectorAll<HTMLElement>(ASSISTANT_SELECTOR)) {
+    if (marker.closest(`${NON_CONTENT}, ${OTHER_AUTHOR}`)) continue;
+    const turn = marker.closest<HTMLElement>(TURN_SELECTOR);
+    // Author markers can be empty siblings of the prose in a conversation turn.
+    candidates.add(turn && isEligibleBody(turn, visibility) && turn.querySelector(PROSE_SELECTOR) ? turn : marker);
+  }
   // Some older layouts expose the author only as an accessible turn label.
-  for (const article of root.querySelectorAll<HTMLElement>('article, [role="article"]')) {
-    if (!isVisibleControl(article, visibility)) continue;
+  for (const article of root.querySelectorAll<HTMLElement>(TURN_SELECTOR)) {
+    if (!isEligibleBody(article, visibility)) continue;
     const label = article.getAttribute('aria-label') || '';
     const heading = article.querySelector<HTMLElement>('.sr-only, [data-testid="author-label"]')?.textContent || '';
-    if ([label, heading].some(value => /^(?:ChatGPT|assistant|助手)(?:\s|[:：]|说|回复|回答|$)/i.test(value.trim())) && article.querySelector('.markdown, .prose')) candidates.add(article);
+    const assistantAction = Array.from(article.querySelectorAll(ASSISTANT_ACTION)).some(control => control.closest(TURN_SELECTOR) === article && !control.closest(`[data-tj-helper], #tingjian-chat-reader-ui, pre, form, ${OTHER_AUTHOR}`));
+    if ((assistantAction || [label, heading].some(value => /^(?:ChatGPT|assistant|助手)(?:\s|[:：]|说|回复|回答|$)/i.test(value.trim()))) && article.querySelector(PROSE_SELECTOR)) candidates.add(article);
   }
-  const eligible = Array.from(candidates).filter(element => {
-    if (!isVisibleControl(element, visibility)) return false;
-    if (isOwnHelper(element) || element.closest('aside, nav, [role="navigation"], [data-testid*="sidebar"], #stage-slideover-sidebar')) return false;
-    if (element.closest('[data-message-author-role="user"], [data-turn="user"], [data-author="user"]')) return false;
-    return !element.closest('pre, [data-testid="code-block"]');
-  });
+  const eligible = Array.from(candidates).filter(element => isEligibleBody(element, visibility));
   // Prefer actual author nodes over their attributed article wrapper. Excluded
   // helper descendants must never cause their genuine parent to be discarded.
   const ordered = eligible.filter(element => !eligible.some(other => other !== element && element.contains(other)))
     .sort((a, b) => a.compareDocumentPosition(b) & 4 ? -1 : 1);
-  const stopSelectors = '[data-testid="stop-button"], [data-testid="stop-generating-button"], button[aria-label*="Stop generating"], button[aria-label*="Stop streaming"], button[aria-label*="停止生成"], button[aria-label*="停止回复"]';
-  const generationActive = Array.from(root.querySelectorAll(stopSelectors)).some(button => !isOwnHelper(button) && isVisibleControl(button, visibility));
+  const generationActive = Array.from(root.querySelectorAll(STOP_CONTROL)).some(button => !isOwnHelper(button) && isVisibleControl(button));
   return ordered.map((element, index) => {
-    const contentElement = contentFor(element);
-    const {text, paragraphs} = extractParagraphs(contentElement);
-    const heading = paragraphs.find(paragraph => /^H[1-6]$/.test(paragraph.element.tagName));
-    const title = Array.from(heading?.text || paragraphs[0]?.text || 'ChatGPT 回复').slice(0, 48).join('');
-    return {
-      id: stableId(element), element, contentElement, title, text, paragraphs,
-      isStreaming: index === ordered.length - 1 && (generationActive || hasStreamingSignal(element)),
-      charCount: Array.from(text.replace(/\s/g, '')).length,
-    };
-  }).filter(message => message.charCount > 0);
+    return messageFromElement(element, index === ordered.length - 1 && (generationActive || hasStreamingSignal(element)));
+  }).filter((message): message is ChatMessage => message !== null);
+}
+
+/** Explicit user pointing can identify a prose body without trusting author CSS. */
+export function pickMessageAt(target: Element): ChatMessage | null {
+  if (target.closest(`${NON_CONTENT}, ${OTHER_AUTHOR}, button, a, [role="button"]:not(.markdown):not(.prose):not([data-message-content])`)) return null;
+  const visibility = new WeakMap<Element, boolean>();
+  const prose = target.closest<HTMLElement>(PROSE_SELECTOR);
+  const turn = target.closest<HTMLElement>(TURN_SELECTOR);
+  const element = turn && turn.querySelector(PROSE_SELECTOR) ? turn : prose;
+  if (!element || !isEligibleBody(element, visibility) || !target.closest('main, [role="main"], #thread, #conversation, [data-testid^="conversation-turn-"]')) return null;
+  const generationActive = Array.from(element.ownerDocument.querySelectorAll(STOP_CONTROL)).some(button => !isOwnHelper(button) && isVisibleControl(button));
+  const known = scanMessages(element.ownerDocument).find(message => message.element === element || message.contentElement === prose);
+  return messageFromElement(element, known?.isStreaming ?? (hasStreamingSignal(element) || generationActive));
 }
 
 function ensureStyles(root: Document) {
