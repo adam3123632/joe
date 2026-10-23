@@ -84,6 +84,36 @@ test('fenced manuscript contents, link labels, reference links and task labels s
   assertSourceMap(text);
 });
 
+test('paragraph-ending domain source badges are skipped without losing manuscript words or final progress',()=>{
+  const text='这是一段读书稿，保留“引用文字”和2001这个年份。结尾仍然有正文。[dokumen.pub](https://dokumen.pub/double-your-dating.html)';
+  assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),['这是一段读书稿','保留引用文字和2001这个年份','结尾仍然有正文']);
+  assertSourceMap(text);
+  assert.equal(locateSpeechOffset(splitSpeechText(text),text.indexOf('[dokumen')),null);
+  const {controller,scheduler,synthesis,end}=fixture(text);
+  controller.play();end();scheduler.advance(160);end();scheduler.advance(360);end();
+  assert.equal(synthesis.utterances.length,3);
+  assert.equal(controller.getSnapshot().progress,1);
+  assert.equal(controller.getSnapshot().isPlaying,false);
+});
+
+test('only matching web address labels in source position are skipped; titled links and semantic dots survive',()=>{
+  const cases:[string,string[]][]=[
+    ['[dokumen.pub](https://dokumen.pub/a)',[]],
+    ['[Dokumen.PUB](https://dokumen.pub/a)',[]],
+    ['[https://dokumen.pub/a](https://dokumen.pub/a)',[]],
+    ['[www.example.com](https://example.com/a "Reference")',[]],
+    ['[example.com](<https://example.com/a>)。',[]],
+    ['[文章标题](https://dokumen.pub/a)',['文章标题']],
+    ['[node.js](https://nodejs.org)',['node.js']],
+    ['[U.S.A.](https://example.com)',['U.S.A.']],
+    ['[3.14](https://example.com)',['3.14']],
+    ['[dokumen.pub](mailto:hello@dokumen.pub)',['dokumen.pub']],
+    ['[example.com](https://example.com/a) 后面还有正文',['example.com 后面还有正文']],
+    ['[作者说明](https://example.com/a)\n\n下一段',['作者说明','下一段']],
+  ];
+  for(const [text,expected] of cases) {assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),expected,text);assertSourceMap(text);}
+});
+
 test('semantic decimal, version, abbreviation, apostrophe and time punctuation is preserved',()=>{
   const text="Dr. Smith uses 3.14, U.S.A. version 1.2.3 at 10:30. Don't change snake_case_ids or well-known words.";
   assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),[

@@ -11,6 +11,25 @@ export interface SpeechChunk {
 
 export const SPEECH_PAUSES = {comma:160,colon:230,semicolon:280,sentence:360,line:280,paragraph:650};
 
+/** Address-only source badges at the end of a paragraph are not manuscript prose. */
+function isSourceAddress(label:string,destination:string):boolean {
+  const display=label.trim();
+  if(!display||/\s/.test(display)) return false;
+  try {
+    const explicitUrl=/^https?:\/\//i.test(display);
+    const shown=new URL(explicitUrl?display:`https://${display}`);
+    if(!explicitUrl&&(/[\\/?#:@]/.test(display)||shown.pathname!=='/')) return false;
+    const hostPattern=/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$/i;
+    if(!hostPattern.test(shown.hostname)||shown.username||shown.password) return false;
+    const address=/^(?:<([^>]+)>|(\S+))/.exec(destination.trim());
+    if(!address) return false;
+    const target=new URL(address[1]||address[2]);
+    if(!/^https?:$/.test(target.protocol)) return false;
+    const hostname=(url:URL)=>url.hostname.toLowerCase().replace(/^www\./,'');
+    return hostname(shown)===hostname(target);
+  } catch {return false;}
+}
+
 function manuscriptMask(text:string):Uint8Array {
   const mask=new Uint8Array(text.length);
   const remove=(start:number,end:number)=>mask.fill(1,start,end);
@@ -36,6 +55,12 @@ function manuscriptMask(text:string):Uint8Array {
     }
     if(depth) continue;
     const labelStart=match.index!+(match[0].startsWith('!')?2:1);
+    const lineSuffix=text.slice(cursor).split(/\r?\n/,1)[0];
+    const endsParagraph=/^[ \t。！？.!?…）)\]】」』”’]*$/.test(lineSuffix);
+    const destination=text.slice(match.index!+match[0].length,cursor-1);
+    if(endsParagraph&&isSourceAddress(match[1],destination)) {
+      remove(match.index!,cursor);continue;
+    }
     remove(match.index!,labelStart);remove(labelStart+match[1].length,cursor);
   }
   for(const match of text.matchAll(/!?\[([^\]\n]+)\]\[[^\]\n]*\]/g)) {
