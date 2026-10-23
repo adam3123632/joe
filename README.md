@@ -2,6 +2,12 @@
 
 把喜欢的文字，读给生活听。一个可直接部署为静态网站的中文稿件朗读器。
 
+## 直接在 ChatGPT 网页阅读（电脑端）
+
+另提供 Chrome / Edge 扩展：在原聊天页面折叠长回答、浏览回答和章节目录，使用系统语音朗读，支持段落高亮、暂停、进度、倍速和音量。[下载安装包](https://adam3123632.github.io/joe/chat-reader/tingjian-chat-reader.zip)，安装与使用见 [chat-reader/README.md](chat-reader/README.md)。它不连接 ChatGPT 原生朗读的音频。
+
+运行 `npm run build:chat-reader` 生成 `build/tingjian-chat-reader.zip`；浏览器回归运行 `npm run test:chat-reader`。原有稿件网页可继续独立使用。
+
 ## 使用
 
 - 复制 ChatGPT 中的稿件，点击「粘贴稿件」；浏览器不允许读取剪贴板时，在编辑框中手动粘贴。

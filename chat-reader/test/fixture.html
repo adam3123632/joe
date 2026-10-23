@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>阅读助手本地回归夹具</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #242b36; background: #f6f8fa; font: 16px/1.8 system-ui, sans-serif; }
+    main { max-width: 780px; margin: 0 auto; padding: 24px 20px 160px; }
+    article { padding: 20px; margin: 20px 0; background: white; border-radius: 12px; }
+    article[data-author="user"] { background: #e7edf4; }
+    h2 { scroll-margin-top: 16px; } h3 { scroll-margin-top: 16px; }
+    button, textarea { font: inherit; }
+    footer { position: sticky; bottom: 0; padding: 12px; background: #f6f8fa; }
+    textarea { max-width: 100%; width: 100%; height: 72px; }
+  </style>
+</head>
+<body>
+  <main id="conversation"></main>
+  <footer><textarea id="prompt-textarea" data-testid="prompt-textarea" aria-label="发送给 ChatGPT 的消息">这段用户草稿必须保持原样，不能被阅读助手读取或折叠。</textarea><button id="native-send" data-testid="send-button">原生发送</button></footer>
+  <script>
+    (() => {
+      const main = document.getElementById('conversation');
+      const prose = [
+        '清晨的窗边，一杯茶慢慢散出热气。阅读是一种重新安排注意力的方式：把眼睛从不断闪动的消息里移开，让一段完整的话带着我们走过日常。这里的句子只用于本地自动化回归，不包含任何真实对话，也不会发送到外部服务。',
+        '我们可以把一篇长文章分成许多小节。标题帮助记住方向，段落提供适当停顿，引用说明作者的来处。认真阅读时不必急着跳到末尾；先把问题摆在桌上，再观察论据怎样一步一步展开，就能发现连接各个观点的线索。',
+        '如果临时离开桌面，可以从当前段落接着听。屏幕上的原文应当留在原处，选择、复制、引用和原生操作都应该继续工作。辅助工具只负责给出目录、标记进度与提供朗读控制，不应该把原来的文章搬到另一个地方。',
+        '接下来尝试一个具体方法：先看目录，再选择有兴趣的小节，最后回到全文。长文折叠只减少页面滚动的负担，不意味着隐藏信息本身。展开之后，列表、强调、链接和引用仍然是原来的节点，熟悉的布局也不应该被替换。',
+        '声音和阅读有不同节奏。有人喜欢慢一点，也有人习惯更快地获取内容，因此倍速和音量需要分别设置。按段定位应当让用户知道自己读到哪里，而不是只给出一个不断变化的百分比；每次暂停后都应能清楚地接续。',
+        '文章写到这里，仍然需要保留一个开放的结尾。阅读工具的价值来自可靠、克制与可预期：没有点击时不主动播放，不碰与自己无关的声音，不把聊天记录传出页面。所有测试都使用虚构文本与模拟声音，不能冒充真实手机或登录会话验证。'
+      ];
+      const makeArticle = (id, role, html) => {
+        const article = document.createElement('article');
+        article.dataset.testid = `conversation-turn-${id}`;
+        article.dataset.author = role;
+        article.dataset.fixtureId = id;
+        article.innerHTML = `<div data-message-author-role="${role}" data-message-id="${id}"><div class="markdown prose">${html}</div></div><nav aria-label="原生消息操作"><button data-testid="copy-turn-action-button">复制原文</button><button data-testid="good-response-turn-action-button">原生赞</button></nav>`;
+        return article;
+      };
+      let originals = [];
+      const captureOriginals = () => {
+        originals = [...main.querySelectorAll('article')].map(article => ({
+          article,
+          markdown: article.querySelector('.markdown'),
+          text: article.querySelector('.markdown').textContent,
+          nodes: [...article.querySelector('.markdown').querySelectorAll('*')].map(node => ({node, parent: node.parentNode})),
+          buttons: [...article.querySelectorAll('nav button')]
+        }));
+      };
+      const render = () => {
+        main.replaceChildren(
+          makeArticle('user-1', 'user', '<p>这是一条虚构用户消息，请帮我整理下面的文章，但不要处理我的消息或输入框。</p>'),
+          makeArticle('assistant-long', 'assistant', `<h2>第一章：把注意力带回文字</h2><p>${prose[0]}</p><p>${prose[1]}</p><h3>一、让原文留在原处</h3><p>${prose[2]}</p><blockquote><p>“辅助阅读应当保留原文，而不是制造另一份副本。”这是本地夹具中的虚构引用。</p></blockquote><h2>第二章：选择适合自己的节奏</h2><p>${prose[3]}</p><ul><li>先查看目录，再选择想读的章节。</li><li>暂停后从当前段落继续，不必从头寻找。</li></ul><p>${prose[4]}</p><h3>二、可靠地抵达结尾</h3><p>${prose[5]}</p>`),
+          makeArticle('assistant-short', 'assistant', '<p>这是一条很短的助手回答，只需保留全文，仍可由用户主动点击朗读。</p>')
+        );
+        captureOriginals();
+      };
+      window.fixture = {
+        render,
+        prose,
+        originalIntegrity() {
+          return originals.every(record => record.article.isConnected && record.markdown === record.article.querySelector('.markdown') && record.text === record.markdown.textContent && record.nodes.every(({node,parent}) => node.isConnected && node.parentNode === parent) && record.buttons.every(button => button.isConnected && button.closest('article') === record.article));
+        },
+        appendStreaming() {
+          if(main.querySelector('[data-fixture-id="assistant-stream"]')) return;
+          const article = makeArticle('assistant-stream', 'assistant', `<h2>正在生成的章节</h2><p>${prose.join('')}</p>`);
+          article.dataset.isStreaming = 'true';
+          main.append(article);
+          const stop = document.createElement('button');
+          stop.dataset.testid = 'stop-button';
+          stop.id = 'native-stop';
+          stop.textContent = '原生停止生成';
+          document.querySelector('footer').append(stop);
+        },
+        streamMore() {
+          const paragraph = main.querySelector('[data-fixture-id="assistant-stream"] .markdown p');
+          if(paragraph) paragraph.append('这是一段新增的流式内容，保持同一回答节点。');
+        },
+        replaceAssistantContent() {
+          const current = main.querySelector('[data-fixture-id="assistant-long"] .markdown');
+          const replacement = current.cloneNode(true);
+          replacement.classList.remove('tj-chatreader-content-collapsed', 'tj-chatreader-active-paragraph');
+          replacement.querySelectorAll('.tj-chatreader-active-paragraph').forEach(node => node.classList.remove('tj-chatreader-active-paragraph'));
+          current.replaceWith(replacement);
+          captureOriginals();
+        },
+        finishStreaming({attributesOnly = false} = {}) {
+          const article = main.querySelector('[data-fixture-id="assistant-stream"]');
+          if(article) delete article.dataset.isStreaming;
+          const stop = document.getElementById('native-stop');
+          if(attributesOnly && stop) stop.hidden = true;
+          else stop?.remove();
+        },
+        navigate() {
+          history.pushState({}, '', '/c/fixture-next');
+          main.replaceChildren(makeArticle('next-assistant', 'assistant', '<h2>另一个虚构会话</h2><p>这里只是新的本地页面文本，上一段朗读必须停止，不应继续给这一页添加旧的高亮。</p>'));
+          captureOriginals();
+        }
+      };
+      render();
+    })();
+  </script>
+</body>
+</html>

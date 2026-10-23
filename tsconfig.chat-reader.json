@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["chat-reader/**/*.ts", "lib/speech.ts"],
+  "exclude": ["node_modules", "dist", "build"]
+}
