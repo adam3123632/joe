@@ -15,6 +15,7 @@ const paths: Record<string, React.ReactNode> = {
   back: <><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/><text x="8" y="16" stroke="none" fill="currentColor" fontSize="8" fontWeight="700">10</text></>,
   forward: <><path d="M20 10a8 8 0 1 0-1 8M20 4v6h-6"/><text x="8" y="16" stroke="none" fill="currentColor" fontSize="8" fontWeight="700">10</text></>,
   volume: <><path d="m11 4-6 5H2v6h3l6 5ZM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></>,
+  muted: <><path d="m11 4-6 5H2v6h3l6 5Z"/><path d="m16 9 6 6m0-6-6 6"/></>,
   edit: <><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14Z"/></>,
   download: <><path d="M12 3v13m-5-5 5 5 5-5M3 17v4h18v-4"/></>,
   trash: <><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></>,
