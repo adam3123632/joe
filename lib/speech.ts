@@ -3,13 +3,13 @@ export interface SpeechChunk {
   text: string;
   start: number;
   end: number;
-  /** Each cleaned UTF-16 unit points to the original manuscript UTF-16 unit. */
+  /** Each cleaned UTF-16 unit maps to the source; normalized spaces map to separators. */
   originalOffsets: number[];
   /** Base-rate pause; adjacent punctuation uses the strongest pause. */
   pauseAfterMs: number;
 }
 
-export const SPEECH_PAUSES = {comma:160,colon:230,semicolon:280,sentence:360,line:280,paragraph:650};
+export const SPEECH_PAUSES = {comma:0,colon:0,semicolon:80,sentence:100,line:100,paragraph:220};
 
 /** Address-only source badges at the end of a paragraph are not manuscript prose. */
 function isSourceAddress(label:string,destination:string):boolean {
@@ -106,8 +106,9 @@ export function splitSpeechText(text:string,maxLength=130):SpeechChunk[] {
   const append=(char:string,index:number)=>{
     value+=char;
     for(let unit=0;unit<char.length;unit++) offsets.push(index+unit);
-    if(value.length>=limit) flush(80);
+    if(value.length>=limit) flush(0);
   };
+  const joinPhrase=(sourceIndex:number)=>{if(value&&!value.endsWith(' ')) append(' ',sourceIndex);};
   for(let index=0;index<text.length;) {
     const char=String.fromCodePoint(text.codePointAt(index)!);
     const sourceIndex=index;index+=char.length;
@@ -119,11 +120,13 @@ export function splitSpeechText(text:string,maxLength=130):SpeechChunk[] {
     }
     if(/\s/.test(char)) {if(value&&!value.endsWith(' ')) append(' ',sourceIndex);continue;}
     if(semanticPunctuation(text,sourceIndex,char)) {append(char,sourceIndex);continue;}
-    if(/[，,、]/.test(char)) {flush(SPEECH_PAUSES.comma);continue;}
-    if(/[：:]/.test(char)) {flush(SPEECH_PAUSES.colon);continue;}
+    // Let the system voice carry a sentence continuously instead of restarting
+    // its synthesis service for every comma or item in an enumeration.
+    if(/[，,、：:]/.test(char)) {joinPhrase(sourceIndex);continue;}
     if(/[；;]/.test(char)) {flush(SPEECH_PAUSES.semicolon);continue;}
     if(/[。！？!?.]/.test(char)) {flush(SPEECH_PAUSES.sentence);continue;}
-    if(/[—–…|｜/\\]/.test(char)) {flush(SPEECH_PAUSES.colon);continue;}
+    if(char==='…') {flush(SPEECH_PAUSES.sentence);continue;}
+    if(/[—–|｜/\\]/.test(char)) {joinPhrase(sourceIndex);continue;}
     // Quotes, brackets and leftover Markdown decorations never reach the voice.
     if(/[\p{P}\p{Cf}★☆✦✧●○◆◇■□▪▫]/u.test(char)) continue;
     append(char,sourceIndex);
@@ -147,7 +150,8 @@ function lowerBound(offsets:number[],target:number):number {
 /** Seek on removed symbols moves forward to the next readable source character. */
 export function locateSpeechOffset(chunks:SpeechChunk[],offset:number):{index:number;offset:number}|null {
   for(let index=0;index<chunks.length;index++) {
-    const cleanedIndex=lowerBound(chunks[index].originalOffsets,offset);
+    let cleanedIndex=lowerBound(chunks[index].originalOffsets,offset);
+    while(cleanedIndex<chunks[index].text.length&&/\s/.test(chunks[index].text[cleanedIndex])) cleanedIndex++;
     if(cleanedIndex<chunks[index].originalOffsets.length) return {index,offset:chunks[index].originalOffsets[cleanedIndex]};
   }
   return null;
@@ -259,13 +263,15 @@ export class NarrationController {
     this.volumeTimer=null;
   }
 
-  private cancelCurrent() {
+  private cancelCurrent(interruptSpeech=true) {
+    // Natural transitions still invalidate callbacks, but do not tear down a
+    // speech service whose utterance has already ended.
     this.generation++;
     if(this.resumeTimer!==null) this.scheduler.clearTimeout(this.resumeTimer);
     if(this.gapTimer!==null) this.scheduler.clearTimeout(this.gapTimer);
     this.clearVolumeTimer();
     this.resumeTimer=null;this.gapTimer=null;this.gap=null;this.utterance=null;
-    this.synthesis.cancel();
+    if(interruptSpeech) this.synthesis.cancel();
   }
 
   setDocument(text:string,documentId:string) {
@@ -275,8 +281,8 @@ export class NarrationController {
     this.emit({currentOffset:0,isPlaying:false,isPaused:false,error:null});
   }
 
-  private complete() {
-    this.cancelCurrent();this.emit({currentOffset:this.text.length,isPlaying:false,isPaused:false,error:null});
+  private complete(interruptSpeech=true) {
+    this.cancelCurrent(interruptSpeech);this.emit({currentOffset:this.text.length,isPlaying:false,isPaused:false,error:null});
   }
 
   private remainingGap():ReadingGap|null {
@@ -290,16 +296,16 @@ export class NarrationController {
     gap.startedAt=this.scheduler.now();
     this.gapTimer=this.scheduler.setTimeout(()=>{
       if(this.disposed||token!==this.generation||!this.state.isPlaying||this.gap!==gap) return;
-      this.gapTimer=null;this.gap=null;this.startAt(gap.nextOffset);
+      this.gapTimer=null;this.gap=null;this.startAt(gap.nextOffset,false);
     },gap.remainingMs);
   }
 
-  private startAt(offset:number) {
+  private startAt(offset:number,interruptSpeech=true) {
     if(this.disposed) return;
-    this.cancelCurrent();
+    this.cancelCurrent(interruptSpeech);
     if(this.synthesis.paused) this.synthesis.resume();
     const position=locateSpeechOffset(this.chunks,normalizeSpeechOffset(this.text,offset));
-    if(!position) {this.complete();return;}
+    if(!position) {this.complete(false);return;}
     const token=this.generation,chunk=this.chunks[position.index];
     const cleanedStart=lowerBound(chunk.originalOffsets,position.offset);
     const utterance=this.makeUtterance(chunk.text.slice(cleanedStart));
@@ -310,14 +316,16 @@ export class NarrationController {
     utterance.onboundary=event=>{
       if(!current()) return;
       const boundary=Number.isFinite(event.charIndex)?Math.max(0,Math.floor(event.charIndex)):0;
-      const source=chunk.originalOffsets[cleanedStart+boundary]??chunk.end;
+      let cleanedIndex=cleanedStart+boundary;
+      while(cleanedIndex<chunk.text.length&&/\s/.test(chunk.text[cleanedIndex])) cleanedIndex++;
+      const source=chunk.originalOffsets[cleanedIndex]??chunk.end;
       this.emit({currentOffset:normalizeSpeechOffset(this.text,source)});
     };
     utterance.onend=()=>{
       if(!current()) return;
       this.utterance=null;this.clearVolumeTimer();
       const next=this.chunks[position.index+1];
-      if(!next) {this.complete();return;}
+      if(!next) {this.complete(false);return;}
       this.generation++;
       if(this.resumeTimer!==null) this.scheduler.clearTimeout(this.resumeTimer);
       this.resumeTimer=null;
@@ -386,7 +394,7 @@ export class NarrationController {
     if(gap) {
       gap.remainingMs*=rate/this.state.rate;this.gap=gap;
       if(isPlaying) this.scheduleGap();else this.emit({isPaused});
-    } else if(isPlaying) this.startAt(currentOffset);
+    } else if(isPlaying) this.startAt(currentOffset,false);
     else this.emit({isPaused});
   }
 

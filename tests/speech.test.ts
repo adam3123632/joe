@@ -29,8 +29,9 @@ class FakeSynthesis {
   speaking=false;
   paused=false;
   utterances:SpeechSynthesisUtterance[]=[];
+  cancelCount=0;
   speak(utterance:SpeechSynthesisUtterance) {this.utterances.push(utterance);this.speaking=true;}
-  cancel() {this.speaking=false;}
+  cancel() {this.speaking=false;this.cancelCount++;}
   pause() {this.paused=true;}
   resume() {this.paused=false;}
 }
@@ -50,7 +51,11 @@ function assertSourceMap(text:string) {
     assert.equal(chunk.start,chunk.originalOffsets[0]);
     assert.equal(chunk.end,chunk.originalOffsets.at(-1)!+1);
     for(let index=0;index<chunk.text.length;index++) {
-      assert.equal(text[chunk.originalOffsets[index]],chunk.text[index]);
+      const source=text[chunk.originalOffsets[index]],cleaned=chunk.text[index];
+      // Only whitespace normalization and weak phrase separators may differ.
+      // Every spoken letter, digit, and semantic mark must still map exactly.
+      if(cleaned===' '&&source!==' ') assert.match(source,/[\s，,、：:—–|｜/\\]/u);
+      else assert.equal(source,cleaned);
       if(index) assert.ok(chunk.originalOffsets[index]>chunk.originalOffsets[index-1]);
     }
   }
@@ -68,7 +73,7 @@ test('Chinese punctuation is silent; cleaned words retain exact original offsets
 test('Markdown heading, emphasis, lists, links and emoji are not spoken',()=>{
   const text='## 标题\n\n- **你好**，[世界](https://x.test/a(b))！👩🏽‍💻\n尾声';
   const chunks=splitSpeechText(text);
-  assert.deepEqual(chunks.map(chunk=>chunk.text),['标题','你好','世界','尾声']);
+  assert.deepEqual(chunks.map(chunk=>chunk.text),['标题','你好 世界','尾声']);
   assertSourceMap(text);
   for(const removed of ['##','**','https://','👩']) {
     const next=locateSpeechOffset(chunks,text.indexOf(removed));
@@ -86,12 +91,12 @@ test('fenced manuscript contents, link labels, reference links and task labels s
 
 test('paragraph-ending domain source badges are skipped without losing manuscript words or final progress',()=>{
   const text='这是一段读书稿，保留“引用文字”和2001这个年份。结尾仍然有正文。[dokumen.pub](https://dokumen.pub/double-your-dating.html)';
-  assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),['这是一段读书稿','保留引用文字和2001这个年份','结尾仍然有正文']);
+  assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),['这是一段读书稿 保留引用文字和2001这个年份','结尾仍然有正文']);
   assertSourceMap(text);
   assert.equal(locateSpeechOffset(splitSpeechText(text),text.indexOf('[dokumen')),null);
   const {controller,scheduler,synthesis,end}=fixture(text);
-  controller.play();end();scheduler.advance(160);end();scheduler.advance(360);end();
-  assert.equal(synthesis.utterances.length,3);
+  controller.play();end();scheduler.advance(100);end();
+  assert.equal(synthesis.utterances.length,2);
   assert.equal(controller.getSnapshot().progress,1);
   assert.equal(controller.getSnapshot().isPlaying,false);
 });
@@ -117,17 +122,89 @@ test('only matching web address labels in source position are skipped; titled li
 test('semantic decimal, version, abbreviation, apostrophe and time punctuation is preserved',()=>{
   const text="Dr. Smith uses 3.14, U.S.A. version 1.2.3 at 10:30. Don't change snake_case_ids or well-known words.";
   assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),[
-    'Dr. Smith uses 3.14','U.S.A. version 1.2.3 at 10:30',"Don't change snake_case_ids or well-known words",
+    'Dr. Smith uses 3.14 U.S.A. version 1.2.3 at 10:30',"Don't change snake_case_ids or well-known words",
   ]);
   assertSourceMap(text);
   assert.deepEqual(splitSpeechText('1. 第一条\n2. 第二条\n1.23 米').map(chunk=>chunk.text),['第一条','第二条','1.23 米']);
-  assert.deepEqual(splitSpeechText('上涨10%，剩余30％，另有 25 %。').map(chunk=>chunk.text),['上涨10%','剩余30％','另有 25 %']);
+  assert.deepEqual(splitSpeechText('上涨10%，剩余30％，另有 25 %。').map(chunk=>chunk.text),['上涨10% 剩余30％ 另有 25 %']);
 });
 
 test('strongest adjacent separator determines rhythm without stacking pauses',()=>{
   const chunks=splitSpeechText('甲，乙、丙：丁；戊。\n\n己');
-  assert.deepEqual(chunks.map(chunk=>chunk.text),['甲','乙','丙','丁','戊','己']);
-  assert.deepEqual(chunks.map(chunk=>chunk.pauseAfterMs),[160,160,230,280,650,0]);
+  assert.deepEqual(chunks.map(chunk=>chunk.text),['甲 乙 丙 丁','戊','己']);
+  assert.deepEqual(chunks.map(chunk=>chunk.pauseAfterMs),[80,220,0]);
+  assert.deepEqual(SPEECH_PAUSES,{comma:0,colon:0,semicolon:80,sentence:100,line:100,paragraph:220});
+  assertSourceMap('甲，乙、丙：丁；戊。\n\n己');
+});
+
+test('dense comma clauses stay in complete sentences without speaking punctuation or source badges',()=>{
+  const text='清晨，我们读书、写字、散步，观察生活、记录想法，也把忙碌、焦虑、疲惫，慢慢放下。 [example.com](https://example.com/source)\n\n继续把每一天，读得从容。';
+  const chunks=splitSpeechText(text);
+  assert.deepEqual(chunks.map(chunk=>chunk.text),[
+    '清晨 我们读书 写字 散步 观察生活 记录想法 也把忙碌 焦虑 疲惫 慢慢放下',
+    '继续把每一天 读得从容',
+  ]);
+  assertSourceMap(text);
+  const {controller,synthesis,scheduler,utterance,end}=fixture(text);
+  controller.play();
+  assert.equal(synthesis.utterances.length,1);
+  assert.equal(scheduler.jobs.size,0);
+  utterance().onboundary!({charIndex:utterance().text.indexOf('记录')} as SpeechSynthesisEvent);
+  assert.equal(controller.getSnapshot().currentOffset,text.indexOf('记录'));
+  end();scheduler.advance(219);assert.equal(synthesis.utterances.length,1);
+  scheduler.advance(1);assert.equal(synthesis.utterances.length,2);
+  end();assert.equal(controller.getSnapshot().progress,1);
+});
+
+test('seek and boundary skip normalized separator spaces while preserving original manuscript offsets',()=>{
+  const text='甲，、**乙**：丙。';
+  const {controller,utterance}=fixture(text);
+  assert.deepEqual(splitSpeechText(text).map(chunk=>chunk.text),['甲 乙 丙']);
+  assertSourceMap(text);
+  for(const offset of [text.indexOf('，'),text.indexOf('、'),text.indexOf('**')]) {
+    controller.seek(offset/text.length);
+    assert.equal(controller.getSnapshot().currentOffset,text.indexOf('乙'));
+    controller.play();assert.equal(utterance().text,'乙 丙');controller.stop();
+  }
+  controller.seek(text.indexOf('：')/text.length);
+  assert.equal(controller.getSnapshot().currentOffset,text.indexOf('丙'));
+  controller.stop();controller.play();
+  utterance().onboundary!({charIndex:1} as SpeechSynthesisEvent);
+  assert.equal(controller.getSnapshot().currentOffset,text.indexOf('乙'));
+});
+
+test('natural sentence transitions and completion never cancel synthesis, but stale callbacks stay invalid',()=>{
+  const {controller,synthesis,scheduler,utterance,end}=fixture('甲，乙；丙。\n\n丁。');
+  controller.play();const cancelBaseline=synthesis.cancelCount,first=utterance();
+  assert.equal(first.text,'甲 乙');
+  end();scheduler.advance(79);assert.equal(synthesis.utterances.length,1);
+  scheduler.advance(1);assert.equal(utterance().text,'丙');
+  first.onboundary!({charIndex:1} as SpeechSynthesisEvent);
+  first.onend!({} as SpeechSynthesisEvent);
+  first.onerror!({error:'interrupted'} as SpeechSynthesisErrorEvent);
+  assert.equal(controller.getSnapshot().currentOffset,4);
+  assert.equal(controller.getSnapshot().error,null);
+  assert.equal(synthesis.cancelCount,cancelBaseline);
+  end();scheduler.advance(219);assert.equal(synthesis.utterances.length,2);
+  scheduler.advance(1);const last=utterance();assert.equal(last.text,'丁');end();
+  assert.equal(synthesis.cancelCount,cancelBaseline);
+  last.onboundary!({charIndex:0} as SpeechSynthesisEvent);
+  last.onend!({} as SpeechSynthesisEvent);
+  last.onerror!({error:'interrupted'} as SpeechSynthesisErrorEvent);
+  assert.equal(controller.getSnapshot().progress,1);
+  assert.equal(controller.getSnapshot().error,null);
+  assert.equal(synthesis.utterances.length,3);
+  controller.seek(0.5);assert.ok(synthesis.cancelCount>cancelBaseline);
+});
+
+test('natural end before a pending volume update applies volume to the next sentence without replay',()=>{
+  const {controller,synthesis,scheduler,utterance,end}=fixture('甲，乙。丙。');
+  controller.play();controller.setVolume(0.4);const oldVolumeTimer=scheduler.serial;
+  end();scheduler.advance(100);
+  assert.equal(utterance().text,'丙');assert.equal(utterance().volume,0.4);
+  scheduler.fireEvenIfCanceled(oldVolumeTimer);scheduler.advance(20);
+  assert.equal(synthesis.utterances.length,2);
+  assert.equal(controller.getSnapshot().isPlaying,true);
 });
 
 test('long readable blocks are bounded; removed emoji do not leave broken surrogates',()=>{
@@ -168,11 +245,11 @@ test('actual boundary/end events and scheduled pauses advance all sentences then
   assert.equal(controller.getSnapshot().currentOffset,2);
   end();
   assert.equal(synthesis.utterances.length,1);
-  scheduler.advance(359);
+  scheduler.advance(99);
   assert.equal(synthesis.utterances.length,1);
   scheduler.advance(1);
   assert.equal(utterance().text,'第二句');
-  end();scheduler.advance(360);
+  end();scheduler.advance(100);
   assert.equal(utterance().text,'第三句');
   end();
   assert.equal(controller.getSnapshot().progress,1);
@@ -197,12 +274,12 @@ test('native pause/resume does not duplicate utterances and seeking remains paus
 
 test('paragraph pause freezes while paused, then resumes only its remaining milliseconds',()=>{
   const {controller,synthesis,scheduler,utterance,end}=fixture('第一段。\n\n第二段。');
-  controller.play();end();scheduler.advance(200);controller.pause();
+  controller.play();end();scheduler.advance(70);controller.pause();
   const canceled=scheduler.serial;
   scheduler.advance(10_000);scheduler.fireEvenIfCanceled(canceled);
   assert.equal(synthesis.utterances.length,1);
   assert.equal(controller.getSnapshot().isPaused,true);
-  controller.play();scheduler.advance(449);
+  controller.play();scheduler.advance(149);
   assert.equal(synthesis.utterances.length,1);
   scheduler.advance(1);
   assert.equal(utterance().text,'第二段');
@@ -211,10 +288,10 @@ test('paragraph pause freezes while paused, then resumes only its remaining mill
 test('rate changes scale remaining paragraph pause and stale timer is harmless',()=>{
   const {controller,synthesis,scheduler,utterance,end}=fixture('第一段。\n\n第二段。');
   controller.play();end();const originalTimer=scheduler.serial;
-  scheduler.advance(150);controller.setRate(2);
+  scheduler.advance(60);controller.setRate(2);
   scheduler.fireEvenIfCanceled(originalTimer);
   assert.equal(synthesis.utterances.length,1);
-  scheduler.advance(249);
+  scheduler.advance(79);
   assert.equal(synthesis.utterances.length,1);
   scheduler.advance(1);
   assert.equal(utterance().text,'第二段');
@@ -296,21 +373,21 @@ test('pausing a pending volume restart makes resume use a fresh utterance at sav
 });
 
 test('volume changes during gaps preserve remaining pause and apply to the next utterance',()=>{
-  const {controller,synthesis,scheduler,utterance,end}=fixture('甲，乙。');
+  const {controller,synthesis,scheduler,utterance,end}=fixture('甲。乙。');
   controller.play();end();const previous=scheduler.serial;
-  scheduler.advance(50);controller.setVolume(0.4);
+  scheduler.advance(30);controller.setVolume(0.4);
   scheduler.fireEvenIfCanceled(previous);
   assert.equal(synthesis.utterances.length,1);
-  scheduler.advance(109);assert.equal(synthesis.utterances.length,1);
+  scheduler.advance(69);assert.equal(synthesis.utterances.length,1);
   scheduler.advance(1);assert.equal(utterance().text,'乙');assert.equal(utterance().volume,0.4);
 });
 
 test('changing rate and volume while gap is paused cannot start playback',()=>{
   const {controller,synthesis,scheduler,utterance,end}=fixture('甲。\n\n乙。');
-  controller.play();end();scheduler.advance(50);controller.pause();
+  controller.play();end();scheduler.advance(20);controller.pause();
   controller.setVolume(0.2);controller.setRate(2);
   scheduler.advance(9000);assert.equal(synthesis.utterances.length,1);
-  controller.play();scheduler.advance(299);assert.equal(synthesis.utterances.length,1);
+  controller.play();scheduler.advance(99);assert.equal(synthesis.utterances.length,1);
   scheduler.advance(1);assert.equal(utterance().text,'乙');assert.equal(utterance().volume,0.2);
 });
 
